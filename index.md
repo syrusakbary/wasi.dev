@@ -1,6 +1,7 @@
 ---
 layout: page
 title: WASI
+permalink: /
 subtitle: The WebAssembly System Interface
 header_text_feature_image: polyfill/WASI-small.png
 ---
