@@ -53,6 +53,9 @@ function handleWASIExit(e) {
     }
 }
 
+// The current guest wasm instance.
+var currentInstance;
+
 // There are two heaps in play, the guest heap, which belongs to the WASI-using
 // program, and the host heap, which belongs to the Emscripten-compiled polyfill
 // library. The following declare support for the guest heap in a similar manner
@@ -78,11 +81,16 @@ var GUEST_HEAP,
 /** @type {Float64Array} */
   GUEST_HEAPF64;
 
-function updateGuestBuffer(buf) {
-  Module['GUEST_buffer'] = GUEST_buffer = buf;
+function setInstance(instance) {
+  currentInstance = instance;
+  updateGuestBuffer();
 }
 
-function updateGuestBufferViews() {
+/// We call updateGuestBuffer any time the guest's memory may have changed,
+/// such as when creating a new instance, or after calling _malloc.
+function updateGuestBuffer() {
+  var buf = currentInstance.exports.memory.buffer;
+  Module['GUEST_buffer'] = GUEST_buffer = buf;
   Module['GUEST_HEAP8'] = GUEST_HEAP8 = new Int8Array(GUEST_buffer);
   Module['GUEST_HEAP16'] = GUEST_HEAP16 = new Int16Array(GUEST_buffer);
   Module['GUEST_HEAP32'] = GUEST_HEAP32 = new Int32Array(GUEST_buffer);
@@ -95,6 +103,8 @@ function updateGuestBufferViews() {
 
 function copyin_bytes(src, len) {
     let dst = _malloc(len);
+    updateGuestBuffer();
+
     for (let i = 0; i < len; ++i) {
         HEAP8[dst + i] = GUEST_HEAP8[src + i];
     }
@@ -102,6 +112,8 @@ function copyin_bytes(src, len) {
 }
 
 function copyout_bytes(dst, src, len) {
+    updateGuestBuffer();
+
     for (let i = 0; i < len; ++i) {
         GUEST_HEAP8[dst + i] = HEAP8[src + i];
     }
@@ -109,11 +121,15 @@ function copyout_bytes(dst, src, len) {
 }
 
 function copyout_i32(dst, src) {
+    updateGuestBuffer();
+
     GUEST_HEAP32[dst>>2] = HEAP32[src>>2];
     _free(src);
 }
 
 function copyout_i64(dst, src) {
+    updateGuestBuffer();
+
     GUEST_HEAP32[dst>>2] = HEAP32[src>>2];
     GUEST_HEAP32[(dst + 4)>>2] = HEAP32[(src + 4)>>2];
     _free(src);
@@ -121,6 +137,8 @@ function copyout_i64(dst, src) {
 
 function translate_ciovs(iovs, iovs_len) {
     host_iovs = _malloc(8 * iovs_len);
+    updateGuestBuffer();
+
     for (let i = 0; i < iovs_len; ++i) {
         let ptr = GUEST_HEAP32[(iovs + i * 8 + 0) >> 2];
         let len = GUEST_HEAP32[(iovs + i * 8 + 4) >> 2];
@@ -141,9 +159,12 @@ function free_ciovs(host_iovs, iovs_len) {
 
 function translate_iovs(iovs, iovs_len) {
     host_iovs = _malloc(8 * iovs_len);
+    updateGuestBuffer();
+
     for (let i = 0; i < iovs_len; ++i) {
         let len = GUEST_HEAP32[(iovs + i * 8 + 4) >> 2];
         let buf = _malloc(len);
+        updateGuestBuffer();
         HEAP32[(host_iovs + i * 8 + 0)>>2] = buf;
         HEAP32[(host_iovs + i * 8 + 4)>>2] = len;
     }
@@ -151,6 +172,7 @@ function translate_iovs(iovs, iovs_len) {
 }
 
 function free_iovs(host_iovs, iovs_len, iovs) {
+    updateGuestBuffer();
     for (let i = 0; i < iovs_len; ++i) {
         let buf = HEAP32[(host_iovs + i * 8 + 0) >> 2];
         let len = HEAP32[(host_iovs + i * 8 + 4) >> 2];
@@ -167,6 +189,8 @@ args_get: function(argv, argv_buf) {
 },
 
 args_sizes_get: function(argc, argv_buf_size) {
+    updateGuestBuffer();
+
     // TODO: Implement command-line arguments.
     GUEST_HEAP32[(argc) >> 2] = 0;
     GUEST_HEAP32[(argv_buf_size) >> 2] = 0;
@@ -192,6 +216,8 @@ environ_get: function(environ, environ_buf) {
 },
 
 environ_sizes_get: function(environ_size, environ_buf_size) {
+    updateGuestBuffer();
+
     // TODO: Implement environment variables.
     GUEST_HEAP32[(environ_size) >> 2] = 0;
     GUEST_HEAP32[(environ_buf_size) >> 2] = 0;
@@ -1680,11 +1706,11 @@ function updateGlobalBufferViews() {
 
 
 var STATIC_BASE = 1024,
-    STACK_BASE = 6256,
+    STACK_BASE = 6176,
     STACKTOP = STACK_BASE,
-    STACK_MAX = 5249136,
-    DYNAMIC_BASE = 5249136,
-    DYNAMICTOP_PTR = 6000;
+    STACK_MAX = 5249056,
+    DYNAMIC_BASE = 5249056,
+    DYNAMICTOP_PTR = 5920;
 
 assert(STACK_BASE % 16 === 0, 'stack must start aligned');
 assert(DYNAMIC_BASE % 16 === 0, 'heap must start aligned');
@@ -2150,7 +2176,7 @@ Module['asm'] = function(global, env, providedBuffer) {
 
 // === Body ===
 
-var ASM_CONSTS = [function() { const imports = { wasi_unstable: WASIPolyfill };         let file = document.getElementById('input').files[0];         let file_with_mime_type = file.slice(0, file.size, 'application/wasm');         let response = new Response(file_with_mime_type);         WebAssembly.instantiateStreaming(response, imports)         .then(obj => {             updateGuestBuffer(obj.instance.exports.memory.buffer);             updateGuestBufferViews();             try {                 obj.instance.exports._start();             } catch (e) {                 if (e instanceof WASIExit) {                     handleWASIExit(e);                 } else {                 }             }         })         .catch(error => {             console.log('error! ' + error);         }); }];
+var ASM_CONSTS = [function() { const imports = { wasi_unstable: WASIPolyfill };         let file = document.getElementById('input').files[0];         let file_with_mime_type = file.slice(0, file.size, 'application/wasm');         let response = new Response(file_with_mime_type);         WebAssembly.instantiateStreaming(response, imports)         .then(obj => {             setInstance(obj.instance);             try {                 obj.instance.exports._start();             } catch (e) {                 if (e instanceof WASIExit) {                     handleWASIExit(e);                 } else {                 }             }         })         .catch(error => {             console.log('error! ' + error);         }); }];
 
 function _emscripten_asm_const_i(code) {
   return ASM_CONSTS[code]();
@@ -2159,7 +2185,7 @@ function _emscripten_asm_const_i(code) {
 
 
 
-// STATICTOP = STATIC_BASE + 5232;
+// STATICTOP = STATIC_BASE + 5152;
 /* global initializers */ /*__ATINIT__.push();*/
 
 
@@ -2170,7 +2196,7 @@ function _emscripten_asm_const_i(code) {
 
 
 /* no memory initializer */
-var tempDoublePtr = 6240
+var tempDoublePtr = 6160
 assert(tempDoublePtr % 8 == 0);
 
 function copyTempFloat(ptr) { // functions, because inlining this code increases code size too much
@@ -3473,11 +3499,11 @@ function copyTempDouble(ptr) {
   
   var ERRNO_CODES={EPERM:1,ENOENT:2,ESRCH:3,EINTR:4,EIO:5,ENXIO:6,E2BIG:7,ENOEXEC:8,EBADF:9,ECHILD:10,EAGAIN:11,EWOULDBLOCK:11,ENOMEM:12,EACCES:13,EFAULT:14,ENOTBLK:15,EBUSY:16,EEXIST:17,EXDEV:18,ENODEV:19,ENOTDIR:20,EISDIR:21,EINVAL:22,ENFILE:23,EMFILE:24,ENOTTY:25,ETXTBSY:26,EFBIG:27,ENOSPC:28,ESPIPE:29,EROFS:30,EMLINK:31,EPIPE:32,EDOM:33,ERANGE:34,ENOMSG:42,EIDRM:43,ECHRNG:44,EL2NSYNC:45,EL3HLT:46,EL3RST:47,ELNRNG:48,EUNATCH:49,ENOCSI:50,EL2HLT:51,EDEADLK:35,ENOLCK:37,EBADE:52,EBADR:53,EXFULL:54,ENOANO:55,EBADRQC:56,EBADSLT:57,EDEADLOCK:35,EBFONT:59,ENOSTR:60,ENODATA:61,ETIME:62,ENOSR:63,ENONET:64,ENOPKG:65,EREMOTE:66,ENOLINK:67,EADV:68,ESRMNT:69,ECOMM:70,EPROTO:71,EMULTIHOP:72,EDOTDOT:73,EBADMSG:74,ENOTUNIQ:76,EBADFD:77,EREMCHG:78,ELIBACC:79,ELIBBAD:80,ELIBSCN:81,ELIBMAX:82,ELIBEXEC:83,ENOSYS:38,ENOTEMPTY:39,ENAMETOOLONG:36,ELOOP:40,EOPNOTSUPP:95,EPFNOSUPPORT:96,ECONNRESET:104,ENOBUFS:105,EAFNOSUPPORT:97,EPROTOTYPE:91,ENOTSOCK:88,ENOPROTOOPT:92,ESHUTDOWN:108,ECONNREFUSED:111,EADDRINUSE:98,ECONNABORTED:103,ENETUNREACH:101,ENETDOWN:100,ETIMEDOUT:110,EHOSTDOWN:112,EHOSTUNREACH:113,EINPROGRESS:115,EALREADY:114,EDESTADDRREQ:89,EMSGSIZE:90,EPROTONOSUPPORT:93,ESOCKTNOSUPPORT:94,EADDRNOTAVAIL:99,ENETRESET:102,EISCONN:106,ENOTCONN:107,ETOOMANYREFS:109,EUSERS:87,EDQUOT:122,ESTALE:116,ENOTSUP:95,ENOMEDIUM:123,EILSEQ:84,EOVERFLOW:75,ECANCELED:125,ENOTRECOVERABLE:131,EOWNERDEAD:130,ESTRPIPE:86};
   
-  var _stdin=6016;
+  var _stdin=5936;
   
-  var _stdout=6032;
+  var _stdout=5952;
   
-  var _stderr=6048;var FS={root:null,mounts:[],devices:{},streams:[],nextInode:1,nameTable:null,currentPath:"/",initialized:false,ignorePermissions:true,trackingDelegate:{},tracking:{openFlags:{READ:1,WRITE:2}},ErrnoError:null,genericErrors:{},filesystems:null,syncFSRequests:0,handleFSError:function (e) {
+  var _stderr=5968;var FS={root:null,mounts:[],devices:{},streams:[],nextInode:1,nameTable:null,currentPath:"/",initialized:false,ignorePermissions:true,trackingDelegate:{},tracking:{openFlags:{READ:1,WRITE:2}},ErrnoError:null,genericErrors:{},filesystems:null,syncFSRequests:0,handleFSError:function (e) {
         if (!(e instanceof FS.ErrnoError)) throw e + ' : ' + stackTrace();
         return ___setErrNo(e.errno);
       },lookupPath:function (path, opts) {
